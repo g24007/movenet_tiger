@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>MoveNetで鼻の座標で船を制御</title>
+    <style>
+        body {
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #videoPlayer {
+            width: 800px;
+            height: auto;
+            margin-bottom: 20px;
+        }
+
+        #gameCanvas {
+            background-color: #592080;
+            border: 10px solid #000000;
+        }
+
+        .none {
+            display: none;
+        }
+
+        #btn {
+            width: 10em;
+            height: 3em;
+        }
+    </style>
+</head>
+
+<body>
+    <p id="countDown"></p>
+    <p id="showScore" class=""
+        style="z-index: 100; position: absolute; top: 500px; color: rgb(238, 255, 0); font-size: 5em;"></p>
+    <button id="btn" class='none' onclick="restart()"
+        style="z-index: 100; position: absolute; top: 750px; background-color: rgb(238, 255, 0);">もう一度遊ぶ</button>
+    <img id="tiger" src="image/ushi.jpg" class='none'></img>
+    <canvas id="videoPlayer" width="800" height="400"></canvas>
+    <canvas id="gameCanvas" width="1000" height="400"></canvas>
+    <video id="video" style="display:none;"></video>
+
+
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+    <script>
+        const tiger = document.getElementById("tiger");
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const shipWidth = 30;
+        const shipHeight = 30;
+        const initialShipY = canvas.height / 2 - shipHeight / 2;
+
+        let ship = { x: 50, y: initialShipY, width: shipWidth, height: shipHeight, hp: 5 };
+        let bullets = [];
+        let enemies = [];
+        let score = 0;
+        let noseY = initialShipY;
+        let enemySpeed = 4;
+        let enemySpawnRate = 0.02;
+        let gameStartTime = Date.now();
+        let isGameRunning = false;
+
+        // 両手を挙げ続けるための変数
+        let handsUpDuration = 0; // 何秒両手を挙げ続けているか
+        const HANDS_UP_THRESHOLD = 500; // 500ミリ秒
+
+        const shipImage = new Image();
+        const enemyImage = new Image();
+        const gameOverImage = new Image();
+        shipImage.src = "image/chara.png";
+        enemyImage.src = "image/ghost01.png";
+        gameOverImage.src = "image/ushi1.jpg";
+        const music_1 = new Audio('sound/kurou_1.mp3');
+        const music_2 = new Audio('sound/shout.mp3');
+        const music_3 = new Audio('sound/restart.mp3');
+        const music_4 = new Audio('sound/bgm.mp3');
+        const music_5 = new Audio('sound/kati.mp3');
+        const music_6 = new Audio('sound/damage.wav');
+        /* 弾を発射する(未調整)
+        function keyPressHandler(e) {
+            if (e.key === " " || e.key === "Spacebar") {
+                bullets.push({ x: ship.x + ship.width / 2 - 2.5, y: ship.y, width: 5, height: 10 });
+            }
+        }
+        */
+
+        function drawShip() {
+            ctx.drawImage(shipImage, ship.x, ship.y, ship.width, ship.height);
+        }
+
+        /*function drawBullets() {// 弾を発射する(未調整)
+            ctx.fillStyle = "#FF0000";
+            bullets = bullets.filter(bullet => {
+                ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
+                bullet.x += 30; // 弾が右に移動
+                return bullet.x < canvas.width; // キャンバス内にいる弾だけ残す
+            });
+        }*/
+
+        function drawEnemies() {
+            enemies = enemies.filter(enemy => {
+                ctx.drawImage(enemyImage, enemy.x, enemy.y, enemy.width, enemy.height);
+                enemy.x -= enemySpeed;
+                if (enemy.x < 0) {
+                    score++;
+                    return false; // 敵が画面外に出たら削除
+                }
+                return true;
+            });
+        }
+
+        function createEnemies() {
+            if (Math.random() < enemySpawnRate) {
+                let enemyY = Math.random() * (canvas.height - 30);
+                enemies.push({ x: canvas.width, y: enemyY, width: 30, height: 30 });
+            }
+        }
+
+        function increaseEnemyDifficulty() {
+            const elapsedTime = (Date.now() - gameStartTime) / 1000;
+
+            if (score > 0 && score % 25 === 0) {
+                enemySpeed += 0.05;
+            }
+
+            if (elapsedTime > 0 && Math.floor(elapsedTime) % 5 === 0) {
+                enemySpawnRate = Math.min(0.05, enemySpawnRate + 0.002);
+            }
+        }
+
+        function detectCollisions() {
+            bullets.forEach((bullet, bulletIndex) => {
+                enemies.forEach((enemy, enemyIndex) => {
+                    if (
+                        bullet.x < enemy.x + enemy.width &&
+                        bullet.x + bullet.width > enemy.x &&
+                        bullet.y < enemy.y + enemy.height &&
+                        bullet.y + bullet.height > enemy.y
+                    ) {
+                        bullets.splice(bulletIndex, 1);
+                        enemies.splice(enemyIndex, 1);
+                        score++;
+                    }
+                });
+            });
+
+            enemies.forEach((enemy, enemyIndex) => {
+                if (
+                    ship.x < enemy.x + enemy.width &&
+                    ship.x + ship.width > enemy.x &&
+                    ship.y < enemy.y + enemy.height &&
+                    ship.y + ship.height > enemy.y
+                ) {
+                    enemies.splice(enemyIndex, 1);
+                    ship.hp--;
+                    music_6.currentTime = 0;
+                    music_6.play();
+                    if (ship.hp <= 0) {
+                        videoPlayer.classList.add('none');
+                        tiger.classList.remove('none');
+                        music_1.currentTime = 0;
+                        music_1.play();
+                        setTimeout(gameOver(), 100);
+                    }
+                }
+            });
+        }
+
+        function drawHUD() {
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillText("Score: " + score, 18, 20);
+            ctx.fillText("HP: " + ship.hp, 18, 40);
+        }
+
+        function drawRanking() {
+            let scores = JSON.parse(localStorage.getItem("scores")) || [];
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "#FFFFFF";
+            ctx.fillText("ランキング:", 850, 20);
+            scores.forEach((score, index) => {
+                ctx.fillText((index + 1) + "位: " + score + "点", 850, 40 + index * 20);
+            });
+        }
+        let btn = document.getElementById('btn');
+        function gameOver() {
+            saveScore(score);
+            //isGameRunning = false;
+
+            videoPlayer.classList.add('none'); // ゲームオーバー時にビデオプレーヤーを非表示にする
+
+            tiger.classList.remove('none'); // タイガーの画像を表示する
+            music_1.currentTime = 0;
+            music_1.play();
+            music_4.pause();
+            showScore();
+            btn.classList.remove('none');
+            resetGame();
+        }
+
+        function resetGame() {
+            //alert("Game Over! Your Score: " + score);
+            ship.hp = 5;
+            score = 0;
+            bullets = [];
+            enemies = [];
+            enemySpeed = 4;
+            enemySpawnRate = 0.02;
+            isGameRunning = false;
+        }
+
+        function saveScore(newScore) {
+            let scores = JSON.parse(localStorage.getItem("scores")) || [];
+            scores.push(newScore);
+            scores.sort((a, b) => b - a);
+            if (scores.length > 5) scores = scores.slice(0, 5);
+            localStorage.setItem("scores", JSON.stringify(scores));
+        }
+        function showScore() {
+            let yourScore = score;
+
+            scoreText.textContent = 'your score：' + yourScore;
+
+            scoreText.classList.remove('none');
+        }
+
+
+
+        function startCountdown() {
+            let countDown = document.getElementById('countDown');
+            let count = 3;
+
+            countDown.textContent = count;
+
+            const interval = setInterval(() => {
+                count--;
+                if (count <= 0) {//カメラの準備のためのカウントダウン
+                    music_2.currentTime = 0;
+                    music_2.play();
+                    music_4.play();
+                    music_4.loop = true;
+                    clearInterval(interval);
+                    countDown.textContent = "";
+                    isGameRunning = true;
+                    update();
+                } else {
+                    countDown.textContent = count;
+                    music_5.currentTime = 0;
+                    music_5.play();
+                }
+            }, 1000);
+        }
+
+        function update() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ship.y = noseY - ship.height / 2;
+            ship.y = Math.max(0, Math.min(ship.y, canvas.height - ship.height));
+
+            drawShip();
+            //drawBullets();
+            drawEnemies();
+            createEnemies();
+            detectCollisions();
+            drawHUD();
+            drawRanking();
+            increaseEnemyDifficulty();
+
+            if (isGameRunning) {
+                requestAnimationFrame(update);
+            }
+        }
+        let scoreText = document.getElementById('showScore');
+        function restart() {
+            videoPlayer.classList.remove('none');
+            tiger.classList.add('none');
+            btn.classList.add('none');
+            scoreText.classList.add('none');
+            music_3.currentTime = 0;
+            music_3.play();
+            startCountdown();
+
+        }
+
+        const video = document.getElementById("video");
+        const videoPlayer = document.getElementById("videoPlayer");
+        const videoCtx = videoPlayer.getContext("2d");
+
+
+        async function setupCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                alert("カメラにアクセスできません: " + error);
+            }
+        }
+
+
+
+        async function loadMoveNet() {
+            const detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet);
+            setInterval(async () => {
+                const poses = await detector.estimatePoses(video);
+                if (poses.length > 0) {
+                    const keypoints = poses[0].keypoints;
+
+                    // 鼻のY座標の取得
+                    if (keypoints[0].score > 0.5) {
+                        noseY = keypoints[0].y;
+                    }
+
+                    /* 両手のY座標の取得
+                    const leftWrist = keypoints[9]; // 左手首
+                    const rightWrist = keypoints[10]; // 右手首
+
+                    // 両手がカメラの上部にあるかを確認
+                    if (leftWrist.score > 0.5 && rightWrist.score > 0.5 && leftWrist.y < 200 && rightWrist.y < 200) {
+                        handsUpDuration += 100; // 100ミリ秒追加
+                    } else {
+                        handsUpDuration = 0; // 両手が上にない場合リセット
+                    }
+
+                    // 両手を上に挙げ続けたら弾を横に発射
+                    if (handsUpDuration >= HANDS_UP_THRESHOLD) {
+                        // 敵を倒すための弾を生成
+                        bullets.push({ x: ship.x + ship.width / 2 - 2.5, y: ship.y, width: 5, height: 10 }); // 横に発射
+                        handsUpDuration = 0; // 発射後リセット
+                    }*/
+
+                    videoCtx.drawImage(video, 0, 0, videoPlayer.width, videoPlayer.height);
+                }
+            }, 100);
+        }
+
+        document.addEventListener("DOMContentLoaded", async () => {
+            await setupCamera();
+            await loadMoveNet();
+            video.play();
+            startCountdown();
+        });
+
+        //document.addEventListener("keypress", keyPressHandler);
+    </script>
+</body>
+
+</html>
